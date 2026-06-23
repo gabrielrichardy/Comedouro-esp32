@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP-32 Controller</title>
+
+  <!--
+    FONTES
+    - Share Tech Mono: fonte monoespaçada para valores numéricos e logs
+    - Rajdhani: fonte principal da interface (sem serifa, estilo industrial)
+  -->
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* ─── VARIÁVEIS GLOBAIS ────────────────────────────────────────────────────
+       Todas as cores e fontes definidas aqui.
+       Alterar um valor aqui reflete em toda a interface.
+    ─────────────────────────────────────────────────────────────────────────── */
+    :root {
+      --bg:         #0a0c0f;   /* Fundo principal (quase preto) */
+      --surface:    #111418;   /* Superfície secundária */
+      --card:       #161b22;   /* Fundo dos cards */
+      --border:     #1f2937;   /* Cor das bordas */
+      --accent:     #00e5ff;   /* Azul ciano — cor principal de destaque */
+      --green:      #00ff88;   /* Verde — status OK / pino HIGH */
+      --red:        #ff3355;   /* Vermelho — erros / parada de emergência */
+      --yellow:     #ffd700;   /* Amarelo — avisos */
+      --text:       #e2e8f0;   /* Texto principal */
+      --muted:      #64748b;   /* Texto secundário / desabilitado */
+      --font-mono:  'Share Tech Mono', monospace;
+      --font-main:  'Rajdhani', sans-serif;
+    }
+
+    /* ─── RESET BÁSICO ────────────────────────────────────────────────────────
+       Remove margens e paddings padrão do navegador.
+       box-sizing: border-box garante que padding não expanda o tamanho do elemento.
+    ─────────────────────────────────────────────────────────────────────────── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-main);
+      min-height: 100vh;
+      overflow-x: hidden; /* Evita scroll horizontal */
+    }
+
+    /* ─── GRADE DE FUNDO ──────────────────────────────────────────────────────
+       Pseudo-elemento ::before cria a grade pontilhada decorativa no fundo.
+       pointer-events: none garante que não interfere nos cliques.
+    ─────────────────────────────────────────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─── CONTAINER CENTRAL ───────────────────────────────────────────────────
+       Limita largura máxima e centraliza o conteúdo.
+       z-index: 1 garante que fica acima da grade de fundo.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px 20px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── HEADER ──────────────────────────────────────────────────────────────
+       Barra superior com logo e status de conexão.
+    ─────────────────────────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo-area { display: flex; align-items: center; gap: 14px; }
+
+    /* Ícone quadrado com gradiente e brilho */
+    .chip-icon {
+      width: 44px; height: 44px;
+      background: linear-gradient(135deg, var(--accent), #0077ff);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 0 20px rgba(0,229,255,0.3);
+    }
+
+    .logo-text h1 {
+      font-size: 22px; font-weight: 700;
+      letter-spacing: 2px; text-transform: uppercase;
+      color: var(--accent); line-height: 1;
+    }
+
+    .logo-text span {
+      font-family: var(--font-mono);
+      font-size: 11px; color: var(--muted); letter-spacing: 1px;
+    }
+
+    /* Área de status (indicador de conexão + ping) */
+    .status-bar { display: flex; align-items: center; gap: 20px; }
+
+    .status-pill {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-family: var(--font-mono); font-size: 12px;
+    }
+
+    /* Bolinha de status — muda cor conforme conexão */
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: all 0.3s;
+    }
+
+    /* Estado: conectado — verde pulsante */
+    .dot.connected {
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s infinite;
+    }
+
+    /* Estado: erro — vermelho fixo */
+    .dot.error { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.4; }
+    }
+
+    /* ─── BARRA DE CONEXÃO ────────────────────────────────────────────────────
+       Campo para digitar o IP do ESP32 e botões de conectar/desconectar.
+       IP padrão: 192.168.4.1 (endereço fixo do Access Point do ESP32)
+    ─────────────────────────────────────────────────────────────────────────── */
+    .connect-bar {
+      display: flex; gap: 10px;
+      margin-bottom: 28px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      align-items: center;
+    }
+
+    .connect-bar label {
+      font-family: var(--font-mono);
+      font-size: 12px; color: var(--accent); white-space: nowrap;
+    }
+
+    .connect-bar input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-family: var(--font-mono); font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .connect-bar input:focus { border-color: var(--accent); }
+
+    /* ─── BOTÕES ──────────────────────────────────────────────────────────────
+       Estilos reutilizáveis para todos os botões da interface.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .btn {
+      padding: 8px 20px;
+      border-radius: 6px; border: none;
+      cursor: pointer;
+      font-family: var(--font-main); font-weight: 600;
+      font-size: 14px; letter-spacing: 1px; text-transform: uppercase;
+      transition: all 0.2s;
+    }
+
+    /* Azul — ação principal (Conectar) */
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-primary:hover { box-shadow: 0 0 16px rgba(0,229,255,0.5); transform: translateY(-1px); }
+
+    /* Vermelho — ação destrutiva (Desconectar, Stop) */
+    .btn-danger { background: transparent; color: var(--red); border: 1px solid var(--red); }
+    .btn-danger:hover { background: rgba(255,51,85,0.1); }
+
+    /* Verde — ação de confirmação */
+    .btn-success { background: var(--green); color: #000; }
+    .btn-success:hover { box-shadow: 0 0 16px rgba(0,255,136,0.4); transform: translateY(-1px); }
+
+    /* ─── LAYOUT DE GRADE ─────────────────────────────────────────────────────
+       .grid   = 2 colunas iguais
+       .grid-3 = 3 colunas iguais
+    ─────────────────────────────────────────────────────────────────────────── */
+    .grid   { display: grid; grid-template-columns: 1fr 1fr;     gap: 16px; margin-bottom: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+
+    /* ─── CARD ────────────────────────────────────────────────────────────────
+       Bloco visual reutilizável com linha decorativa no topo.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      position: relative; overflow: hidden;
+    }
+
+    /* Linha de gradiente decorativa no topo de cada card */
+    .card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0.5;
+    }
+
+    /* Título de seção dentro do card com linha separadora */
+    .card-title {
+      font-size: 11px; font-family: var(--font-mono);
+      color: var(--accent); letter-spacing: 2px; text-transform: uppercase;
+      margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .card-title::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ─── CONTROLE DE MOTOR ───────────────────────────────────────────────────
+       Layout do painel de cada motor (velocidade + direção + stop).
+    ─────────────────────────────────────────────────────────────────────────── */
+    .motor-block { display: flex; flex-direction: column; gap: 14px; }
+
+    .motor-header { display: flex; justify-content: space-between; align-items: center; }
+
+    .motor-label { font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+
+    /* Valor numérico da velocidade em destaque */
+    .motor-value { font-family: var(--font-mono); font-size: 28px; color: var(--accent); }
+    .motor-value span { font-size: 13px; color: var(--muted); }
+
+    /* Slider de velocidade estilizado */
+    input[type="range"] {
+      -webkit-appearance: none; width: 100%; height: 6px;
+      border-radius: 3px; background: var(--border);
+      outline: none; cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 18px; height: 18px;
+      border-radius: 50%; background: var(--accent);
+      cursor: pointer; box-shadow: 0 0 10px rgba(0,229,255,0.5);
+      transition: box-shadow 0.2s;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      box-shadow: 0 0 20px rgba(0,229,255,0.8);
+    }
+
+    /* Botões FWD / REV lado a lado */
+    .direction-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+    .dir-btn {
+      padding: 10px; border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface); color: var(--text);
+      font-family: var(--font-main); font-weight: 600;
+      font-size: 13px; letter-spacing: 1px;
+      cursor: pointer; transition: all 0.15s;
+      text-align: center; text-transform: uppercase;
+    }
+
+    /* Estado ativo: direção selecionada */
+    .dir-btn:hover, .dir-btn.active {
+      background: rgba(0,229,255,0.1);
+      border-color: var(--accent); color: var(--accent);
+    }
+
+    .dir-btn.active { box-shadow: inset 0 0 10px rgba(0,229,255,0.15); }
+
+    /* ─── JOYSTICK ────────────────────────────────────────────────────────────
+       Controle analógico virtual — arrastar o polegar move os dois motores.
+       A lógica JavaScript converte posição X/Y em velocidade diferencial.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .joystick-wrap {
+      display: flex; justify-content: center;
+      align-items: center; flex-direction: column; gap: 16px;
+    }
+
+    .joystick-container { position: relative; width: 160px; height: 160px; }
+
+    /* Base circular do joystick */
+    #joystick-base {
+      width: 160px; height: 160px; border-radius: 50%;
+      background: radial-gradient(circle, #1a2030 0%, #0d1117 100%);
+      border: 2px solid var(--border); position: relative; cursor: pointer;
+      box-shadow: inset 0 0 30px rgba(0,0,0,0.5), 0 0 20px rgba(0,229,255,0.05);
+    }
+
+    /* Linhas cruzadas (crosshair) no centro da base */
+    #joystick-base::before,
+    #joystick-base::after {
+      content: ''; position: absolute; background: rgba(0,229,255,0.1);
+    }
+    #joystick-base::before { width: 1px; height: 100%; left: 50%; top: 0; }
+    #joystick-base::after  { width: 100%; height: 1px; top: 50%; left: 0; }
+
+    /* Polegar arrastável do joystick */
+    #joystick-thumb {
+      width: 52px; height: 52px; border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, #2a9fd6, #0077aa);
+      border: 2px solid var(--accent);
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      cursor: grab; transition: box-shadow 0.15s;
+      box-shadow: 0 0 15px rgba(0,229,255,0.4);
+      user-select: none; /* Evita seleção de texto ao arrastar */
+    }
+
+    #joystick-thumb:active { cursor: grabbing; }
+    #joystick-thumb.active { box-shadow: 0 0 25px rgba(0,229,255,0.7); }
+
+    /* Exibe coordenadas X/Y e direção abaixo do joystick */
+    .joystick-coords {
+      font-family: var(--font-mono); font-size: 12px;
+      color: var(--muted); text-align: center;
+    }
+    .joystick-coords strong { color: var(--accent); }
+
+    /* ─── GPIO ────────────────────────────────────────────────────────────────
+       Grade de pinos digitais — clicar alterna HIGH/LOW e envia comando ao ESP32.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .gpio-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+
+    .gpio-pin {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 6px;
+      text-align: center; cursor: pointer; transition: all 0.2s;
+    }
+
+    .gpio-pin:hover { border-color: var(--accent); }
+
+    /* Estado HIGH: borda verde com brilho */
+    .gpio-pin.high {
+      background: rgba(0,255,136,0.08);
+      border-color: var(--green);
+      box-shadow: 0 0 12px rgba(0,255,136,0.15);
+    }
+
+    .gpio-pin .pin-num  { font-family: var(--font-mono); font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .gpio-pin .pin-state { font-size: 13px; font-weight: 700; color: var(--muted); }
+    .gpio-pin.high .pin-state { color: var(--green); }
+
+    /* ─── MONITOR SERIAL ──────────────────────────────────────────────────────
+       Caixa de log com scroll automático — exibe ações e mensagens recebidas.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .monitor {
+      background: #060a0d; border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px;
+      font-family: var(--font-mono); font-size: 12px;
+      height: 160px; overflow-y: auto; line-height: 1.8;
+    }
+
+    /* Scrollbar estilizada */
+    .monitor::-webkit-scrollbar       { width: 4px; }
+    .monitor::-webkit-scrollbar-track { background: transparent; }
+    .monitor::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Tipos de linha de log com cores diferentes */
+    .log-line          { color: var(--muted); }
+    .log-line .ts      { color: #2d4a5a; margin-right: 8px; }   /* Timestamp */
+    .log-line.info .msg { color: var(--accent); }                /* Info: azul */
+    .log-line.ok   .msg { color: var(--green);  }                /* Sucesso: verde */
+    .log-line.err  .msg { color: var(--red);    }                /* Erro: vermelho */
+    .log-line.warn .msg { color: var(--yellow); }                /* Aviso: amarelo */
+
+    /* ─── TELEMETRIA ──────────────────────────────────────────────────────────
+       Linhas de dados do sistema — CPU, RAM, temperatura, Wi-Fi.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .tele-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+    }
+    .tele-row:last-child { border-bottom: none; }
+
+    .tele-label { font-size: 13px; color: var(--muted); font-weight: 500; }
+    .tele-value { font-family: var(--font-mono); font-size: 16px; color: var(--text); }
+
+    /* Barra de progresso para CPU e RAM */
+    .tele-bar  { width: 80px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 3px; }
+    .tele-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.5s ease; }
+
+    /* ─── BOTÃO DE EMERGÊNCIA ─────────────────────────────────────────────────
+       Ocupa toda a largura — ativa/desativa a parada de emergência.
+       Quando ativo: fundo avermelhado com brilho.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .estop {
+      width: 100%; padding: 14px;
+      background: transparent; border: 2px solid var(--red);
+      border-radius: 10px; color: var(--red);
+      font-family: var(--font-main); font-size: 16px;
+      font-weight: 700; letter-spacing: 3px; text-transform: uppercase;
+      cursor: pointer; transition: all 0.15s; margin-bottom: 16px;
+    }
+
+    .estop:hover, .estop.active {
+      background: rgba(255,51,85,0.15);
+      box-shadow: 0 0 20px rgba(255,51,85,0.3), inset 0 0 20px rgba(255,51,85,0.05);
+    }
+
+    .estop:active { transform: scale(0.99); }
+
+    /* ─── ABAS ────────────────────────────────────────────────────────────────
+       Navegação entre seções: Motores / GPIO / Telemetria.
+    ─────────────────────────────────────────────────────────────────────────── */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+
+    .tab {
+      padding: 8px 16px; border-radius: 6px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); font-family: var(--font-main);
+      font-weight: 600; font-size: 13px; letter-spacing: 1px;
+      text-transform: uppercase; cursor: pointer; transition: all 0.2s;
+    }
+
+    /* Aba selecionada */
+    .tab.active { background: rgba(0,229,255,0.1); border-color: var(--accent); color: var(--accent); }
+
+    /* Conteúdo das abas — só a ativa fica visível */
+    .tab-content        { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ─── RODAPÉ ──────────────────────────────────────────────────────────────
+       Informações de versão e relógio em tempo real.
+    ─────────────────────────────────────────────────────────────────────────── */
+    footer {
+      margin-top: 28px; padding-top: 16px;
+      border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+      font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    }
+
+    /* ─── RESPONSIVIDADE ──────────────────────────────────────────────────────
+       Em telas pequenas (celular): colunas reduzidas, header empilhado.
+    ─────────────────────────────────────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      .grid          { grid-template-columns: 1fr; }
+      .grid-3        { grid-template-columns: 1fr 1fr; }
+      .gpio-grid     { grid-template-columns: repeat(3, 1fr); }
+      header         { flex-direction: column; gap: 12px; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════
+       Logo à esquerda + indicador de conexão e ping à direita.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <header>
+    <div class="logo-area">
+      <div class="chip-icon">⚡</div>
+      <div class="logo-text">
+        <h1>ESP-32 Controller</h1>
+        <span>Motor &amp; GPIO Control Interface</span>
+      </div>
+    </div>
+    <div class="status-bar">
+      <!-- Bolinha animada + texto ONLINE/OFFLINE -->
+      <div class="status-pill">
+        <div class="dot" id="conn-dot"></div>
+        <span id="conn-label">OFFLINE</span>
+      </div>
+      <!-- Latência em ms (simulada com valor aleatório) -->
+      <div class="status-pill">
+        <span id="ping-val">---</span>
+        <span style="color:var(--muted)">ms</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══ BARRA DE CONEXÃO ══════════════════════════════════════════════════════
+       IP padrão: 192.168.4.1 — endereço fixo do Access Point do ESP32.
+       Ao conectar, o código tenta WebSocket primeiro; se falhar, usa HTTP.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div class="connect-bar">
+    <label>ESP32_IP://</label>
+    <input type="text" id="esp-ip" value="192.168.4.1" placeholder="192.168.4.1">
+    <button class="btn btn-primary"  onclick="connectESP()">Conectar</button>
+    <button class="btn btn-danger"   onclick="disconnectESP()">Desconectar</button>
+  </div>
+
+  <!-- ═══ ABAS DE NAVEGAÇÃO ════════════════════════════════════════════════════
+       Cada aba exibe uma seção diferente: motores, GPIO ou telemetria.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('motors')">Motores</button>
+    <button class="tab"        onclick="switchTab('gpio')">GPIO</button>
+    <button class="tab"        onclick="switchTab('telemetry')">Telemetria</button>
+  </div>
+
+  <!-- ═══ PARADA DE EMERGÊNCIA ═════════════════════════════════════════════════
+       Envia {"cmd":"estop"} ao ESP32 e trava todos os motores no firmware.
+       Clique novamente para liberar (apenas no dashboard — no ESP32 requer reset).
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <button class="estop" id="estop-btn" onclick="emergencyStop()">
+    ⛔ PARADA DE EMERGÊNCIA
+  </button>
+
+  <!-- ═══ ABA: MOTORES ══════════════════════════════════════════════════════════
+       Controle individual de Motor A e Motor B + joystick direcional.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-motors" class="tab-content active">
+    <div class="grid">
+
+      <!-- Motor A -->
+      <div class="card">
+        <div class="card-title">Motor A</div>
+        <div class="motor-block">
+          <div class="motor-header">
+            <span class="motor-label">VELOCIDADE</span>
+            <span class="motor-value" id="ma-val">0 <span>%</span></span>
+          </div>
+          <!-- Slider envia comando ao mover: {"cmd":"motor","motor":"A","speed":X,"dir":"FWD"} -->
+          <input type="range" min="0" max="100" value="0" id="ma-slider"
+                 oninput="updateMotor('A', this.value)">
+          <div class="direction-btns">
+            <button class="dir-btn" id="ma-fwd" onclick="setDir('A','FWD')">▶ Frente</button>
+            <button class="dir-btn" id="ma-rev" onclick="setDir('A','REV')">◀ Ré</button>
+          </div>
+          <button class="btn btn-danger" style="width:100%;padding:8px" onclick="stopMotor('A')">STOP</button>
+        </div>
+      </div>
+
+      <!-- Motor B -->
+      <div class="card">
+        <div class="card-title">Motor B</div>
+        <div class="motor-block">
+          <div class="motor-header">
+            <span class="motor-label">VELOCIDADE</span>
+            <span class="motor-value" id="mb-val">0 <span>%</span></span>
+          </div>
+          <input type="range" min="0" max="100" value="0" id="mb-slider"
+                 oninput="updateMotor('B', this.value)">
+          <div class="direction-btns">
+            <button class="dir-btn" id="mb-fwd" onclick="setDir('B','FWD')">▶ Frente</button>
+            <button class="dir-btn" id="mb-rev" onclick="setDir('B','REV')">◀ Ré</button>
+          </div>
+          <button class="btn btn-danger" style="width:100%;padding:8px" onclick="stopMotor('B')">STOP</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Joystick — controle diferencial dos dois motores simultaneamente -->
+    <div class="card">
+      <div class="card-title">Controle Direcional</div>
+      <div class="joystick-wrap">
+        <div class="joystick-container">
+          <div id="joystick-base">
+            <!-- Polegar arrastável — posição X/Y mapeada para velocidade dos motores -->
+            <div id="joystick-thumb"></div>
+          </div>
+        </div>
+        <!-- Exibe coordenadas normalizadas (-100 a 100) e direção textual -->
+        <div class="joystick-coords">
+          X: <strong id="jx">0</strong> &nbsp;
+          Y: <strong id="jy">0</strong>
+          &nbsp;&nbsp;|&nbsp;&nbsp;
+          Dir: <strong id="jdir">CENTER</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ABA: GPIO ════════════════════════════════════════════════════════════
+       Grade de pinos digitais — clique alterna HIGH/LOW e envia ao ESP32.
+       Pinos disponíveis definidos no array GPIO_PINS no JavaScript.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-gpio" class="tab-content">
+    <div class="card">
+      <div class="card-title">Pinos Digitais</div>
+      <!-- Grade gerada dinamicamente pelo JavaScript (buildGPIO) -->
+      <div class="gpio-grid" id="gpio-grid"></div>
+    </div>
+  </div>
+
+  <!-- ═══ ABA: TELEMETRIA ═══════════════════════════════════════════════════════
+       Dados enviados pelo ESP32 via WebSocket a cada 2 segundos.
+       Se não houver WebSocket real, a simulação gera valores aleatórios.
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-telemetry" class="tab-content">
+    <div class="grid">
+
+      <!-- Dados do sistema (CPU, RAM, temperatura, uptime) -->
+      <div class="card">
+        <div class="card-title">Sistema</div>
+        <div class="tele-row">
+          <div>
+            <div class="tele-label">CPU</div>
+            <div class="tele-bar"><div class="tele-fill" id="cpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="tele-value" id="cpu-val">---%</div>
+        </div>
+        <div class="tele-row">
+          <div>
+            <div class="tele-label">RAM Livre</div>
+            <div class="tele-bar"><div class="tele-fill" id="ram-bar" style="width:0%;background:var(--green)"></div></div>
+          </div>
+          <div class="tele-value" id="ram-val">--- KB</div>
+        </div>
+        <div class="tele-row">
+          <div><div class="tele-label">Temperatura</div></div>
+          <div class="tele-value" id="temp-val">---°C</div>
+        </div>
+        <div class="tele-row">
+          <div><div class="tele-label">Uptime</div></div>
+          <div class="tele-value" id="uptime-val">---</div>
+        </div>
+      </div>
+
+      <!-- Dados de rede Wi-Fi -->
+      <div class="card">
+        <div class="card-title">Wi-Fi</div>
+        <div class="tele-row">
+          <div><div class="tele-label">RSSI</div></div>
+          <div class="tele-value" id="rssi-val">--- dBm</div>
+        </div>
+        <div class="tele-row">
+          <div><div class="tele-label">IP</div></div>
+          <div class="tele-value" id="ip-val" style="font-size:13px">---</div>
+        </div>
+        <div class="tele-row">
+          <div><div class="tele-label">SSID</div></div>
+          <div class="tele-value" id="ssid-val" style="font-size:13px">---</div>
+        </div>
+        <div class="tele-row">
+          <div><div class="tele-label">Canal</div></div>
+          <div class="tele-value" id="ch-val">---</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ MONITOR SERIAL ════════════════════════════════════════════════════════
+       Log em tempo real de todas as ações e mensagens — sempre visível.
+       Máximo de 200 linhas (linhas antigas são removidas automaticamente).
+  ══════════════════════════════════════════════════════════════════════════════ -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-title">Monitor Serial
+      <button onclick="clearLog()"
+              style="margin-left:auto;padding:3px 10px;font-size:11px;
+                     background:var(--surface);border:1px solid var(--border);
+                     color:var(--muted);border-radius:4px;cursor:pointer">
+        Limpar
+      </button>
+    </div>
+    <div class="monitor" id="monitor"></div>
+  </div>
+
+  <footer>
+    <span>ESP32 Controller v1.0</span>
+    <span id="footer-time">--:--:--</span>
+    <span>WebSocket API</span>
+  </footer>
+</div><!-- /container -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// ESTADO GLOBAL
+// Variáveis que guardam o estado atual da conexão e dos motores.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let connected  = false;  // true quando o WebSocket ou modo simulação está ativo
+let ws         = null;   // instância do WebSocket (null se desconectado)
+let stopped    = false;  // true quando a parada de emergência está ativa
+
+// Velocidade e direção atuais de cada motor
+let motorState = {
+  A: { speed: 0, dir: 'FWD' },
+  B: { speed: 0, dir: 'FWD' }
+};
+
+// Pinos GPIO disponíveis para controle manual
+const GPIO_PINS = [2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INICIALIZAÇÃO
+// Roda quando a página termina de carregar.
+// ═══════════════════════════════════════════════════════════════════════════════
+window.onload = () => {
+  buildGPIO();        // Gera os botões de pino na grade GPIO
+  initJoystick();     // Registra eventos de mouse/touch no joystick
+  updateClock();      // Exibe hora inicial no rodapé
+  setInterval(updateClock, 1000); // Atualiza relógio a cada segundo
+  log('Sistema iniciado. Aguardando conexão...', 'info');
+};
+
+// Atualiza o relógio no rodapé
+function updateClock() {
+  document.getElementById('footer-time').textContent =
+    new Date().toLocaleTimeString('pt-BR');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ABAS
+// Alterna a aba visível e marca o botão correto como ativo.
+// ═══════════════════════════════════════════════════════════════════════════════
+function switchTab(tab) {
+  const tabNames = ['motors', 'gpio', 'telemetry'];
+
+  // Marca o botão da aba selecionada como ativo
+  document.querySelectorAll('.tab').forEach((t, i) => {
+    t.classList.toggle('active', tabNames[i] === tab);
+  });
+
+  // Exibe somente o conteúdo da aba selecionada
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONEXÃO
+// Tenta conectar via WebSocket primeiro.
+// Se falhar (ESP32 offline ou firmware diferente), entra em modo simulação.
+// ═══════════════════════════════════════════════════════════════════════════════
+function connectESP() {
+  const ip = document.getElementById('esp-ip').value.trim();
+  if (!ip) return;
+
+  log(`Conectando a ws://${ip}:81 ...`, 'info');
+
+  try {
+    // WebSocket na porta 81 (conforme definido no firmware)
+    ws = new WebSocket(`ws://${ip}:81`);
+
+    ws.onopen    = ()  => onConnected(ip);
+    ws.onmessage = (e) => handleMessage(e.data);
+    ws.onclose   = ()  => onDisconnected();
+    ws.onerror   = ()  => {
+      // WebSocket falhou — ativa modo simulação para testes sem hardware
+      log('Falha WebSocket — modo simulação ativado', 'warn');
+      simulateConnect(ip);
+    };
+  } catch {
+    simulateConnect(ip);
+  }
+}
+
+// Ativa o modo simulação (sem ESP32 físico — útil para testes de interface)
+function simulateConnect(ip) {
+  onConnected(ip);
+  startSimulation();
+}
+
+// Marca a interface como conectada
+function onConnected(ip) {
+  connected = true;
+  document.getElementById('conn-dot').className   = 'dot connected';
+  document.getElementById('conn-label').textContent = 'ONLINE';
+  document.getElementById('ip-val').textContent     = ip;
+  log(`Conectado a ${ip}`, 'ok');
+  startPing(); // Inicia atualização do indicador de latência
+}
+
+function disconnectESP() {
+  if (ws) { ws.close(); ws = null; }
+  onDisconnected();
+}
+
+// Marca a interface como desconectada
+function onDisconnected() {
+  connected = false;
+  document.getElementById('conn-dot').className    = 'dot';
+  document.getElementById('conn-label').textContent = 'OFFLINE';
+  log('Desconectado', 'warn');
+}
+
+// Simula valor de ping (ms) — o ESP32 não envia ping real neste firmware
+function startPing() {
+  setInterval(() => {
+    if (!connected) return;
+    document.getElementById('ping-val').textContent =
+      Math.floor(Math.random() * 8 + 2); // Valor entre 2ms e 10ms
+  }, 2000);
+}
+
+// Processa mensagem recebida via WebSocket
+function handleMessage(data) {
+  try {
+    const msg = JSON.parse(data);
+    if (msg.type === 'telemetry') updateTelemetry(msg); // Atualiza painel de telemetria
+    if (msg.type === 'gpio')      updateGPIOState(msg.pin, msg.state);
+    log(`← ${data}`, 'info');
+  } catch {
+    log(`← ${data}`, 'info'); // Mensagem não-JSON — exibe no log mesmo assim
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIMULAÇÃO
+// Gera dados falsos de telemetria quando não há ESP32 conectado.
+// Permite testar e demonstrar a interface sem hardware.
+// ═══════════════════════════════════════════════════════════════════════════════
+let simUptime = 0; // Contador de ciclos para simular uptime
+
+function startSimulation() {
+  setInterval(() => {
+    if (!connected) return;
+    simUptime++;
+    updateTelemetry({
+      cpu:     Math.floor(Math.random() * 30 + 10),          // 10–40%
+      ram:     Math.floor(Math.random() * 100 + 150),        // 150–250 KB
+      temp:    (35 + Math.random() * 15).toFixed(1),         // 35–50°C
+      rssi:    -(Math.floor(Math.random() * 30 + 50)),       // -50 a -80 dBm
+      ssid:    'Comedouro-ESP32',
+      channel: 1
+    });
+  }, 2000);
+}
+
+// Atualiza todos os campos de telemetria na interface
+function updateTelemetry(d) {
+  if (d.cpu !== undefined) {
+    document.getElementById('cpu-val').textContent   = d.cpu + '%';
+    document.getElementById('cpu-bar').style.width   = d.cpu + '%';
+  }
+  if (d.ram !== undefined) {
+    document.getElementById('ram-val').textContent   = d.ram + ' KB';
+    // Normaliza RAM: assume máximo de 300 KB para a barra de progresso
+    document.getElementById('ram-bar').style.width   = Math.min(100, d.ram / 3) + '%';
+  }
+  if (d.temp    !== undefined) document.getElementById('temp-val').textContent  = d.temp    + '°C';
+  if (d.rssi    !== undefined) document.getElementById('rssi-val').textContent  = d.rssi    + ' dBm';
+  if (d.ssid    !== undefined) document.getElementById('ssid-val').textContent  = d.ssid;
+  if (d.channel !== undefined) document.getElementById('ch-val').textContent    = d.channel;
+
+  // Calcula uptime a partir de ciclos de 2s
+  const h = Math.floor(simUptime / 1800);
+  const m = Math.floor((simUptime % 1800) / 30);
+  document.getElementById('uptime-val').textContent = `${h}h ${m}m`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTROLE DE MOTORES
+// Funções chamadas pelos sliders, botões de direção e botão de parada.
+// Cada função envia um JSON ao ESP32: {"cmd":"motor","motor":"A","speed":X,"dir":"FWD"}
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Atualiza velocidade ao mover o slider
+function updateMotor(motor, speed) {
+  if (stopped) return; // Bloqueia se emergência ativa
+  motorState[motor].speed = parseInt(speed);
+  document.getElementById('m' + motor.toLowerCase() + '-val').innerHTML =
+    speed + ' <span>%</span>';
+  sendCommand({ cmd: 'motor', motor, speed: parseInt(speed), dir: motorState[motor].dir });
+  log(`Motor ${motor}: ${speed}% ${motorState[motor].dir}`, 'ok');
+}
+
+// Alterna direção FWD (frente) ou REV (ré)
+function setDir(motor, dir) {
+  motorState[motor].dir = dir;
+  const m = motor.toLowerCase();
+  // Marca visualmente o botão ativo
+  document.getElementById('m' + m + '-fwd').classList.toggle('active', dir === 'FWD');
+  document.getElementById('m' + m + '-rev').classList.toggle('active', dir === 'REV');
+  sendCommand({ cmd: 'motor', motor, speed: motorState[motor].speed, dir });
+  log(`Motor ${motor}: direção → ${dir}`, 'info');
+}
+
+// Para o motor (velocidade = 0, mantém direção)
+function stopMotor(motor) {
+  motorState[motor].speed = 0;
+  const m = motor.toLowerCase();
+  document.getElementById('m' + m + '-slider').value        = 0;
+  document.getElementById('m' + m + '-val').innerHTML       = '0 <span>%</span>';
+  sendCommand({ cmd: 'motor', motor, speed: 0, dir: motorState[motor].dir });
+  log(`Motor ${motor}: STOP`, 'warn');
+}
+
+// Parada de emergência — envia "estop" e trava tudo no firmware
+// Toggle: clicar novamente libera a trava no dashboard
+function emergencyStop() {
+  stopped = !stopped;
+  const btn = document.getElementById('estop-btn');
+  if (stopped) {
+    btn.classList.add('active');
+    stopMotor('A');
+    stopMotor('B');
+    sendCommand({ cmd: 'estop' });
+    log('⛔ PARADA DE EMERGÊNCIA ATIVADA', 'err');
+  } else {
+    btn.classList.remove('active');
+    stopped = false;
+    log('✅ Parada de emergência liberada', 'ok');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GPIO
+// Gera dinamicamente os botões de pino e gerencia o estado HIGH/LOW.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const gpioState = {}; // Guarda estado atual (true = HIGH) de cada pino
+
+// Cria os elementos HTML dos pinos na grade
+function buildGPIO() {
+  const grid = document.getElementById('gpio-grid');
+  GPIO_PINS.forEach(pin => {
+    gpioState[pin] = false; // Estado inicial: LOW
+    const el = document.createElement('div');
+    el.className = 'gpio-pin';
+    el.id        = 'pin-' + pin;
+    el.innerHTML = `<div class="pin-num">D${pin}</div><div class="pin-state">LOW</div>`;
+    el.onclick   = () => toggleGPIO(pin);
+    grid.appendChild(el);
+  });
+}
+
+// Alterna o pino entre HIGH e LOW e envia ao ESP32
+function toggleGPIO(pin) {
+  gpioState[pin] = !gpioState[pin];
+  updateGPIOState(pin, gpioState[pin]);
+  sendCommand({ cmd: 'gpio', pin, state: gpioState[pin] ? 1 : 0 });
+  log(`GPIO D${pin}: ${gpioState[pin] ? 'HIGH' : 'LOW'}`, gpioState[pin] ? 'ok' : 'info');
+}
+
+// Atualiza visual do pino (cor + texto)
+function updateGPIOState(pin, state) {
+  gpioState[pin] = !!state;
+  const el = document.getElementById('pin-' + pin);
+  if (!el) return;
+  el.classList.toggle('high', !!state);
+  el.querySelector('.pin-state').textContent = state ? 'HIGH' : 'LOW';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JOYSTICK
+// Controle analógico virtual — arrastar o polegar envia X/Y ao ESP32.
+// O firmware converte X/Y em velocidade diferencial dos dois motores:
+//   Motor A = Y + X  (avança + vira direita)
+//   Motor B = Y - X  (avança + vira esquerda)
+// ═══════════════════════════════════════════════════════════════════════════════
+function initJoystick() {
+  const base  = document.getElementById('joystick-base');
+  const thumb = document.getElementById('joystick-thumb');
+  let dragging = false;
+  const R = 54; // Raio máximo de deslocamento do polegar (em pixels)
+
+  // Converte posição X/Y em texto de direção
+  function getDir(x, y) {
+    if (Math.abs(x) < 10 && Math.abs(y) < 10) return 'CENTER';
+    const angle = Math.atan2(-y, x) * 180 / Math.PI;
+    if (angle > 45   && angle <= 135)  return 'FRENTE';
+    if (angle <= -45 && angle > -135)  return 'RÉ';
+    if (angle > -45  && angle <= 45)   return 'DIREITA';
+    return 'ESQUERDA';
+  }
+
+  // Move o polegar para a posição (cx, cy) — limita ao raio R
+  function moveThumb(cx, cy) {
+    const rect = base.getBoundingClientRect();
+    let dx = cx - rect.left  - rect.width  / 2;
+    let dy = cy - rect.top   - rect.height / 2;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Limita ao círculo de raio R
+    if (dist > R) { dx = dx / dist * R; dy = dy / dist * R; }
+
+    thumb.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+    // Normaliza para -100 a 100 (invertendo Y pois tela cresce para baixo)
+    const nx = Math.round(dx / R * 100);
+    const ny = Math.round(-dy / R * 100);
+
+    document.getElementById('jx').textContent   = nx;
+    document.getElementById('jy').textContent   = ny;
+    document.getElementById('jdir').textContent = getDir(dx, dy);
+
+    // Atualiza sliders dos motores conforme posição do joystick
+    if (!stopped) {
+      const speedA = Math.max(0, Math.min(100,  ny + nx));
+      const speedB = Math.max(0, Math.min(100,  ny - nx));
+      document.getElementById('ma-slider').value    = Math.abs(speedA);
+      document.getElementById('mb-slider').value    = Math.abs(speedB);
+      document.getElementById('ma-val').innerHTML   = Math.abs(speedA) + ' <span>%</span>';
+      document.getElementById('mb-val').innerHTML   = Math.abs(speedB) + ' <span>%</span>';
+    }
+  }
+
+  // Retorna o polegar ao centro e zera os motores
+  function resetThumb() {
+    thumb.style.transform = 'translate(-50%, -50%)';
+    document.getElementById('jx').textContent   = '0';
+    document.getElementById('jy').textContent   = '0';
+    document.getElementById('jdir').textContent = 'CENTER';
+    document.getElementById('ma-slider').value  = 0;
+    document.getElementById('mb-slider').value  = 0;
+    document.getElementById('ma-val').innerHTML = '0 <span>%</span>';
+    document.getElementById('mb-val').innerHTML = '0 <span>%</span>';
+    sendCommand({ cmd: 'joystick', x: 0, y: 0 });
+  }
+
+  // Eventos de mouse (desktop)
+  thumb.addEventListener('mousedown', e => {
+    dragging = true; thumb.classList.add('active'); e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (dragging) moveThumb(e.clientX, e.clientY);
+  });
+  document.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; thumb.classList.remove('active'); resetThumb(); }
+  });
+
+  // Eventos de touch (celular/tablet)
+  thumb.addEventListener('touchstart', e => {
+    dragging = true; thumb.classList.add('active'); e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchmove', e => {
+    if (dragging) { const t = e.touches[0]; moveThumb(t.clientX, t.clientY); }
+  }, { passive: false });
+  document.addEventListener('touchend', () => {
+    if (dragging) { dragging = false; thumb.classList.remove('active'); resetThumb(); }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENVIO DE COMANDOS
+// Tenta WebSocket primeiro (mais rápido).
+// Se não houver WS ativo, usa HTTP POST em /cmd como fallback.
+// ═══════════════════════════════════════════════════════════════════════════════
+function sendCommand(data) {
+  const msg = JSON.stringify(data);
+
+  // WebSocket — preferencial (tempo real, sem overhead HTTP)
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(msg);
+    return;
+  }
+
+  // HTTP fallback — usado quando WebSocket não está disponível
+  if (connected) {
+    const ip = document.getElementById('esp-ip').value.trim();
+    fetch(`http://${ip}/cmd`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    msg
+    }).catch(() => {}); // Silencia erros de rede no fallback
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOG (MONITOR SERIAL)
+// Adiciona linhas ao monitor com timestamp e cor por tipo.
+// Tipos: 'info' (azul), 'ok' (verde), 'err' (vermelho), 'warn' (amarelo)
+// Limite de 200 linhas — remove as mais antigas automaticamente.
+// ═══════════════════════════════════════════════════════════════════════════════
+function log(msg, type = 'info') {
+  const mon  = document.getElementById('monitor');
+  const ts   = new Date().toLocaleTimeString('pt-BR');
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  line.innerHTML = `<span class="ts">[${ts}]</span><span class="msg">${msg}</span>`;
+  mon.appendChild(line);
+  mon.scrollTop = mon.scrollHeight; // Auto-scroll para a última linha
+
+  // Remove linhas antigas ao ultrapassar 200
+  while (mon.children.length > 200) mon.removeChild(mon.firstChild);
+}
+
+function clearLog() {
+  document.getElementById('monitor').innerHTML = '';
+}
+</script>
+</body>
+</html>
