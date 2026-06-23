@@ -49,24 +49,4 @@ BTS7960B M-  → Motor (fio 2)
 
 ---
 
-## API WebSocket
-
-{"cmd": "motor",    "motor": "A", "speed": 75, "dir": "FWD"}
-{"cmd": "estop"}
-{"cmd": "gpio",     "pin": 2,     "state": 1}
-{"cmd": "joystick", "x": 30,      "y": 60}
-
----
-
-## Estrutura do projeto
-
-comedouro-esp32/
-├── firmware/
-│   └── main.ino
-├── dashboard/
-│   └── index.html
-└── README.md
-
----
-
 Desenvolvido por Gabriel
