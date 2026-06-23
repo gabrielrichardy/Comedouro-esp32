@@ -1,0 +1,175 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+#include <ArduinoJson.h>
+
+// ─── CONFIGURAÇÕES ────────────────────────────────────────────────────────────
+const char* AP_SSID = "Comedouro-ESP32";
+const char* AP_PASS = "12345678";
+
+WebServer        server(80);
+WebSocketsServer webSocket(81);
+
+// ─── PINOS BTS7960B ───────────────────────────────────────────────────────────
+#define ENA  25
+#define IN1  26
+#define IN2  27
+#define ENB  13
+#define IN3  14
+#define IN4  12
+
+// ─── ESTADO ───────────────────────────────────────────────────────────────────
+bool   stopped = false;
+int    motorAspd = 0, motorBspd = 0;
+String motorAdir = "FWD", motorBdir = "FWD";
+
+// ─── MOTORES (ledcWrite — correto pro ESP32) ──────────────────────────────────
+void moverMotorA(int speed, String dir) {
+  int pwm = map(speed, 0, 100, 0, 255);
+  digitalWrite(IN1, dir == "FWD" ? HIGH : LOW);
+  digitalWrite(IN2, dir == "FWD" ? LOW  : HIGH);
+  ledcWrite(0, pwm);
+}
+
+void moverMotorB(int speed, String dir) {
+  int pwm = map(speed, 0, 100, 0, 255);
+  digitalWrite(IN3, dir == "FWD" ? HIGH : LOW);
+  digitalWrite(IN4, dir == "FWD" ? LOW  : HIGH);
+  ledcWrite(1, pwm);
+}
+
+void pararTudo() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+  ledcWrite(0, 0);
+  ledcWrite(1, 0);
+}
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+void addCORS() {
+  server.sendHeader("Access-Control-Allow-Origin",  "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// ─── PROCESSAR COMANDO ────────────────────────────────────────────────────────
+void processCommand(StaticJsonDocument<256>& doc) {
+  String cmd = doc["cmd"].as<String>();
+
+  if (cmd == "estop") {
+    stopped = true;
+    pararTudo();
+    Serial.println("⛔ PARADA DE EMERGÊNCIA");
+
+  } else if (cmd == "motor") {
+    if (stopped) return;
+    String motor = doc["motor"].as<String>();
+    int    speed = doc["speed"] | 0;
+    String dir   = doc["dir"]   | "FWD";
+    if (motor == "A") { motorAspd = speed; motorAdir = dir; moverMotorA(speed, dir); }
+    else              { motorBspd = speed; motorBdir = dir; moverMotorB(speed, dir); }
+    Serial.printf("Motor %s: %d%% %s\n", motor.c_str(), speed, dir.c_str());
+
+  } else if (cmd == "gpio") {
+    int pin = doc["pin"] | -1;
+    int state = doc["state"] | 0;
+    if (pin >= 0) { pinMode(pin, OUTPUT); digitalWrite(pin, state); }
+
+  } else if (cmd == "joystick") {
+    if (stopped) return;
+    int x = doc["x"] | 0;
+    int y = doc["y"] | 0;
+    int spdA = constrain(y + x, -100, 100);
+    int spdB = constrain(y - x, -100, 100);
+    moverMotorA(abs(spdA), spdA >= 0 ? "FWD" : "REV");
+    moverMotorB(abs(spdB), spdB >= 0 ? "FWD" : "REV");
+  }
+}
+
+// ─── ROTAS HTTP ───────────────────────────────────────────────────────────────
+void handleStatus() {
+  addCORS();
+  StaticJsonDocument<256> doc;
+  doc["connected"] = true;
+  doc["ip"]        = WiFi.softAPIP().toString();
+  doc["ssid"]      = AP_SSID;
+  doc["cpu"]       = random(10, 40);
+  doc["ram"]       = ESP.getFreeHeap() / 1024;
+  doc["temp"]      = (int)temperatureRead();
+  doc["uptime"]    = millis() / 1000;
+  String out; serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+void handleCmd() {
+  addCORS();
+  if (!server.hasArg("plain")) { server.send(400, "text/plain", "sem body"); return; }
+  StaticJsonDocument<256> doc;
+  deserializeJson(doc, server.arg("plain"));
+  processCommand(doc);
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleOptions() { addCORS(); server.send(204); }
+
+// ─── WEBSOCKET ────────────────────────────────────────────────────────────────
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (type == WStype_TEXT) {
+    StaticJsonDocument<256> doc;
+    deserializeJson(doc, payload, length);
+    processCommand(doc);
+  }
+}
+
+// ─── TELEMETRIA ───────────────────────────────────────────────────────────────
+unsigned long lastTelemetry = 0;
+
+void sendTelemetry() {
+  if (millis() - lastTelemetry < 2000) return;
+  lastTelemetry = millis();
+  StaticJsonDocument<256> doc;
+  doc["type"]   = "telemetry";
+  doc["cpu"]    = random(10, 40);
+  doc["ram"]    = ESP.getFreeHeap() / 1024;
+  doc["temp"]   = (int)temperatureRead();
+  doc["uptime"] = millis() / 1000;
+  String out; serializeJson(doc, out);
+  webSocket.broadcastTXT(out);
+}
+
+// ─── SETUP ────────────────────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  // PWM canais
+  ledcSetup(0, 1000, 8); ledcAttachPin(ENA, 0);
+  ledcSetup(1, 1000, 8); ledcAttachPin(ENB, 1);
+
+  // Pinos direção
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  pararTudo();
+
+  // Wi-Fi AP
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.print("🌐 IP: "); Serial.println(WiFi.softAPIP());
+
+  // HTTP
+  server.on("/status", HTTP_GET,     handleStatus);
+  server.on("/cmd",    HTTP_POST,    handleCmd);
+  server.on("/cmd",    HTTP_OPTIONS, handleOptions);
+  server.begin();
+
+  // WebSocket
+  webSocket.begin();
+  webSocket.onEvent(onWebSocketEvent);
+}
+
+// ─── LOOP ─────────────────────────────────────────────────────────────────────
+void loop() {
+  server.handleClient();
+  webSocket.loop();
+  sendTelemetry();
+}
