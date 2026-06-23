@@ -37,18 +37,6 @@ BTS7960B M-  → Motor (fio 2)
 
 ---
 
-## Como usar
-
-1. Abra firmware/main.ino na Arduino IDE
-2. Instale as bibliotecas: WebSocketsServer (by Markus Sattler) e ArduinoJson
-3. Selecione a placa ESP32 Dev Module
-4. Faça o upload
-5. Conecte ao Wi-Fi Comedouro-ESP32 — senha: 12345678
-6. Abra dashboard/index.html no navegador
-7. Digite o IP 192.168.4.1 e clique em Conectar
-
----
-
 ## Funcionalidades
 
 - Controle de velocidade PWM (0–100%) por motor
